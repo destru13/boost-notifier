@@ -30,36 +30,64 @@ def save_cache(cache):
 def boost_uid(bookmaker, titre):
     return hashlib.md5((bookmaker + "|" + titre).encode()).hexdigest()
 
+async def accept_cookies(page):
+    """Accepter les cookies sur les sites FR (RGPD)"""
+    try:
+        selectors = [
+            "button:has-text('Tout accepter')",
+            "button:has-text('Accepter tout')",
+            "button:has-text('Accepter')",
+            "button:has-text('Accept all')",
+            "button:has-text('J\'accepte')",
+            "#onetrust-accept-btn-handler",
+            "[class*='accept'][class*='cookie']",
+            "[id*='accept'][id*='cookie']",
+            "button[class*='accept']",
+        ]
+        for sel in selectors:
+            try:
+                btn = page.locator(sel).first
+                if await btn.is_visible(timeout=2000):
+                    await btn.click()
+                    await page.wait_for_timeout(1500)
+                    print("Cookies acceptes via: " + sel)
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
 async def scrape_betclic(page):
     boosts = []
     try:
         await page.goto("https://www.betclic.fr/", timeout=30000)
-        await page.wait_for_load_state("networkidle", timeout=15000)
-        await page.wait_for_timeout(6000)
-        # Debug: compter les elements
+        await page.wait_for_timeout(3000)
+        await accept_cookies(page)
+        await page.wait_for_timeout(4000)
+        # Scroll pour declencher le chargement lazy
+        await page.evaluate("window.scrollTo(0, 300)")
+        await page.wait_for_timeout(2000)
         count = await page.evaluate("document.querySelectorAll('.boostedCard').length")
         print("[Betclic] .boostedCard count: " + str(count))
-        # Fallback: chercher via JS evaluate pour bypasser les restrictions
-        data = await page.evaluate("""() => {
-            const cards = [...document.querySelectorAll('.boostedCard')];
-            return cards.map(c => ({
-                title: c.querySelector('.boostedCard_title')?.innerText || '',
-                sub: c.querySelector('.boostedCard_subtitle')?.innerText || '',
-                desc: c.querySelector('.boostedCard_description')?.innerText || '',
-                href: c.href || '',
-                text: c.innerText?.substring(0, 150) || ''
-            }));
-        }""")
-        print("[Betclic] data: " + str(data)[:200])
-        for item in data:
-            titre = (item.get('title','') + ' ' + item.get('sub','') + ' -- ' + item.get('desc','')).strip()
-            if titre and len(titre) > 5:
-                boosts.append({
-                    "bookmaker": "Betclic",
-                    "titre": titre[:300],
-                    "url": item.get('href') or "https://www.betclic.fr/",
-                    "heure": datetime.now().strftime("%H:%M")
-                })
+        if count > 0:
+            data = await page.evaluate("""() => {
+                return [...document.querySelectorAll('.boostedCard')].map(c => ({
+                    title: c.querySelector('.boostedCard_title')?.innerText || '',
+                    sub: c.querySelector('.boostedCard_subtitle')?.innerText || '',
+                    desc: c.querySelector('.boostedCard_description')?.innerText || '',
+                    href: c.href || ''
+                }));
+            }""")
+            for item in data:
+                titre = (item.get('title','') + ' ' + item.get('sub','') + ' -- ' + item.get('desc','')).strip()
+                if titre and len(titre) > 5:
+                    boosts.append({
+                        "bookmaker": "Betclic",
+                        "titre": titre[:300],
+                        "url": item.get('href') or "https://www.betclic.fr/",
+                        "heure": datetime.now().strftime("%H:%M")
+                    })
     except Exception as e:
         print("[Betclic] Erreur : " + str(e))
     print("[scrape_betclic] " + str(len(boosts)) + " boost(s) trouve(s)")
@@ -69,31 +97,34 @@ async def scrape_unibet(page):
     boosts = []
     try:
         await page.goto("https://www.unibet.fr/sport", timeout=30000)
-        await page.wait_for_load_state("networkidle", timeout=15000)
-        await page.wait_for_timeout(6000)
+        await page.wait_for_timeout(3000)
+        await accept_cookies(page)
+        await page.wait_for_timeout(4000)
+        await page.evaluate("window.scrollTo(0, 400)")
+        await page.wait_for_timeout(2000)
         count = await page.evaluate("document.querySelectorAll('.scb-card').length")
         print("[Unibet] .scb-card count: " + str(count))
-        data = await page.evaluate("""() => {
-            const cards = [...document.querySelectorAll('.scb-card')];
-            return cards.map(c => ({
-                match: c.querySelector('.scb-card-title')?.innerText || '',
-                sel: c.querySelector('.scb-card-selection-title')?.innerText || '',
-                comp: c.querySelector('.scb-card-info')?.innerText?.replace(/\n/g,' | ') || ''
-            }));
-        }""")
-        print("[Unibet] data: " + str(data)[:300])
-        for item in data:
-            match_t = item.get('match','').strip()
-            sel_t   = item.get('sel','').strip()
-            comp_t  = item.get('comp','').strip()
-            if match_t:
-                titre = (comp_t + " -- " + match_t + " -- " + sel_t) if comp_t else (match_t + " -- " + sel_t)
-                boosts.append({
-                    "bookmaker": "Unibet",
-                    "titre": titre[:300],
-                    "url": "https://www.unibet.fr/sport",
-                    "heure": datetime.now().strftime("%H:%M")
-                })
+        if count > 0:
+            # Pas de regex \n - on fait la logique en Python
+            data = await page.evaluate("""() => {
+                return [...document.querySelectorAll('.scb-card')].map(c => ({
+                    match: (c.querySelector('.scb-card-title')?.innerText || '').trim(),
+                    sel: (c.querySelector('.scb-card-selection-title')?.innerText || '').trim(),
+                    comp: (c.querySelector('.scb-card-info')?.innerText || '').trim()
+                }));
+            }""")
+            for item in data:
+                match_t = item.get('match','')
+                sel_t   = item.get('sel','')
+                comp_t  = item.get('comp','').replace('\n', ' | ')
+                if match_t:
+                    titre = (comp_t + " -- " + match_t + " -- " + sel_t) if comp_t else (match_t + " -- " + sel_t)
+                    boosts.append({
+                        "bookmaker": "Unibet",
+                        "titre": titre[:300],
+                        "url": "https://www.unibet.fr/sport",
+                        "heure": datetime.now().strftime("%H:%M")
+                    })
     except Exception as e:
         print("[Unibet] Erreur : " + str(e))
     print("[scrape_unibet] " + str(len(boosts)) + " boost(s) trouve(s)")
@@ -103,23 +134,25 @@ async def scrape_parionssport(page):
     boosts = []
     try:
         await page.goto("https://www.enligne.parionssport.fdj.fr/", timeout=30000)
-        await page.wait_for_load_state("networkidle", timeout=15000)
-        await page.wait_for_timeout(6000)
+        await page.wait_for_timeout(3000)
+        await accept_cookies(page)
+        await page.wait_for_timeout(4000)
+        await page.evaluate("window.scrollTo(0, 400)")
+        await page.wait_for_timeout(2000)
         count = await page.evaluate("document.querySelectorAll('.psel-boosted-bet').length")
         print("[ParionsSport] .psel-boosted-bet count: " + str(count))
-        data = await page.evaluate("""() => {
-            const els = [...document.querySelectorAll('.psel-boosted-bet')];
-            return els.map(e => e.innerText?.substring(0,200) || '');
-        }""")
-        print("[ParionsSport] data: " + str(data)[:200])
-        for t in data:
-            if t and len(t) > 5:
-                boosts.append({
-                    "bookmaker": "ParionsSport",
-                    "titre": t[:300],
-                    "url": "https://www.enligne.parionssport.fdj.fr/",
-                    "heure": datetime.now().strftime("%H:%M")
-                })
+        if count > 0:
+            data = await page.evaluate("""() => {
+                return [...document.querySelectorAll('.psel-boosted-bet')].map(e => (e.innerText || '').trim());
+            }""")
+            for t in data:
+                if t and len(t) > 5:
+                    boosts.append({
+                        "bookmaker": "ParionsSport",
+                        "titre": t[:300],
+                        "url": "https://www.enligne.parionssport.fdj.fr/",
+                        "heure": datetime.now().strftime("%H:%M")
+                    })
     except Exception as e:
         print("[ParionsSport] Erreur : " + str(e))
     print("[scrape_parionssport] " + str(len(boosts)) + " boost(s) trouve(s)")
@@ -129,15 +162,15 @@ async def scrape_winamax(page):
     boosts = []
     try:
         await page.goto("https://www.winamax.fr/paris-sportifs/sports", timeout=30000)
-        await page.wait_for_load_state("networkidle", timeout=15000)
-        await page.wait_for_timeout(6000)
-        # Debug: voir le HTML de la page
+        await page.wait_for_timeout(3000)
+        await accept_cookies(page)
+        await page.wait_for_timeout(5000)
         title = await page.title()
         print("[Winamax] page title: " + title)
         elements = await page.query_selector_all(
             "[class*='boosted'],[class*='boost'],[class*='cbflash'],[class*='cb-flash']"
         )
-        print("[Winamax] elements trouves: " + str(len(elements)))
+        print("[Winamax] elements: " + str(len(elements)))
         for el in elements:
             t = (await el.inner_text()).strip()
             if t and len(t) > 5:
