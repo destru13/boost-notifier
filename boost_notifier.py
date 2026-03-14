@@ -118,27 +118,23 @@ async def scrape_betclic(page) -> list[dict]:
     return boosts
 
 
-async def scrape_unibet(page) -> list[dict]:
+async def scrape_parionssport(page) -> list[dict]:
     boosts = []
     try:
-        await page.goto("https://www.unibet.fr/sport", timeout=30000)
-        await page.wait_for_timeout(3000)
-
-        elements = await page.query_selector_all(
-            "[class*='boost'], [class*='Boost'], [class*='enhanced'], "
-            "[class*='super-price'], [data-role*='boost']"
-        )
+        await page.goto("https://www.enligne.parionssport.fdj.fr/", timeout=30000)
+        await page.wait_for_selector(".psel-boosted-bet", timeout=10000)
+        elements = await page.query_selector_all(".psel-boosted-bet")
         for el in elements:
             texte = (await el.inner_text()).strip()
             if texte and len(texte) > 5:
                 boosts.append({
-                    "bookmaker": "Unibet",
+                    "bookmaker": "ParionsSport",
                     "titre": texte[:300],
-                    "url": "https://www.unibet.fr/sport",
+                    "url": "https://www.enligne.parionssport.fdj.fr/",
                     "heure": datetime.now().strftime("%H:%M"),
                 })
     except Exception as e:
-        print(f"[Unibet] Erreur : {e}")
+        print(f"[ParionsSport] Erreur : {e}")
     return boosts
 
 
