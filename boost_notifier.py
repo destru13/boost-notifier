@@ -1,7 +1,7 @@
 """
 Système de notification des boosts sportifs → Telegram
 Bookmakers : Winamax, Betclic, Unibet, ParionsSport
-Exécution  : GitHub Actions (cron toutes les 15 min)
+Exécution  : GitHub Actions (cron toutes les 15 min, 3 checks internes)
 """
 
 import asyncio
@@ -12,20 +12,17 @@ import requests
 from datetime import datetime
 from playwright.async_api import async_playwright
 
-# ─── Configuration ───────────────────────────────────────────────────────────
 TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 CACHE_FILE       = "boosts_vus.json"
 
-# ─── Emojis par bookmaker ────────────────────────────────────────────────────
 BOOKMAKER_EMOJI = {
-    "Winamax":     "🟠",
-    "Betclic":     "🔵",
-    "Unibet":      "🟢",
+    "Winamax":      "🟠",
+    "Betclic":      "🔵",
+    "Unibet":       "🟢",
     "ParionsSport": "🔴",
 }
 
-# ─── Telegram ────────────────────────────────────────────────────────────────
 def send_telegram(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     resp = requests.post(url, json={
@@ -37,7 +34,6 @@ def send_telegram(message: str):
     if not resp.ok:
         print(f"Telegram error: {resp.text}")
 
-# ─── Cache (boosts déjà vus) ──────────────────────────────────────────────────
 def load_cache() -> dict:
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, encoding="utf-8") as f:
@@ -51,17 +47,13 @@ def save_cache(cache: dict):
 def boost_uid(bookmaker: str, titre: str) -> str:
     return hashlib.md5(f"{bookmaker}|{titre}".encode()).hexdigest()
 
-# ─── Scrapers ─────────────────────────────────────────────────────────────────
 async def scrape_winamax(page) -> list[dict]:
     boosts = []
     try:
         await page.goto("https://www.winamax.fr/paris-sportifs/sports", timeout=30000)
         await page.wait_for_timeout(3000)
-
-        # Winamax affiche les boosts CB FLASH via leur API interne
-        # On cherche les éléments avec "boost" ou "CB FLASH" dans le DOM
         elements = await page.query_selector_all(
-            "[class*='boost'], [class*='Boost'], [data-testid*='boost']"
+            "[class*='boosted'], [class*='boost'], [class*='cb-flash'], [class*='cbflash']"
         )
         for el in elements:
             texte = (await el.inner_text()).strip()
@@ -72,58 +64,67 @@ async def scrape_winamax(page) -> list[dict]:
                     "url": "https://www.winamax.fr/paris-sportifs/sports",
                     "heure": datetime.now().strftime("%H:%M"),
                 })
-
-        # Fallback : chercher le texte "CB FLASH" directement
-        if not boosts:
-            content = await page.content()
-            if "CB FLASH" in content or "cote boostée" in content.lower():
-                items = await page.query_selector_all("text=CB FLASH")
-                for item in items[:10]:
-                    parent = await item.evaluate_handle("el => el.closest('[class*=\"market\"], [class*=\"bet\"], article, li')")
-                    if parent:
-                        texte = (await parent.inner_text()).strip()
-                        if texte:
-                            boosts.append({
-                                "bookmaker": "Winamax",
-                                "titre": texte[:300],
-                                "url": "https://www.winamax.fr/paris-sportifs/sports",
-                                "heure": datetime.now().strftime("%H:%M"),
-                            })
     except Exception as e:
         print(f"[Winamax] Erreur : {e}")
     return boosts
 
-
 async def scrape_betclic(page) -> list[dict]:
     boosts = []
     try:
-        await page.goto("https://www.betclic.fr/paris-sportifs", timeout=30000)
+        await page.goto("https://www.betclic.fr/sport", timeout=30000)
         await page.wait_for_timeout(3000)
-
-        elements = await page.query_selector_all(
-            "[class*='boost'], [class*='Boost'], [class*='surboost'], "
-            "[class*='cote-boostee'], [data-type*='boost']"
-        )
+        elements = await page.query_selector_all(".is-boosted")
         for el in elements:
-            texte = (await el.inner_text()).strip()
+            card = await el.evaluate_handle(
+                "el => el.closest('[class*=\"card\"], [class*=\"event\"], [class*=\"match\"], li, article') || el.parentElement"
+            )
+            texte = (await card.inner_text()).strip() if card else (await el.inner_text()).strip()
             if texte and len(texte) > 5:
                 boosts.append({
                     "bookmaker": "Betclic",
                     "titre": texte[:300],
-                    "url": "https://www.betclic.fr/paris-sportifs",
+                    "url": "https://www.betclic.fr/sport",
                     "heure": datetime.now().strftime("%H:%M"),
                 })
     except Exception as e:
         print(f"[Betclic] Erreur : {e}")
     return boosts
 
+async def scrape_unibet(page) -> list[dict]:
+    """Unibet - Super Cotes Boostées (.scb-card) - sélecteurs confirmés par inspection DOM"""
+    boosts = []
+    try:
+        await page.goto("https://www.unibet.fr/sport", timeout=30000)
+        await page.wait_for_selector(".scb-card", timeout=10000)
+        cards = await page.query_selector_all(".scb-card")
+        print(f"[Unibet] {len(cards)} carte(s) boost trouvée(s)")
+        for card in cards:
+            match_el  = await card.query_selector(".scb-card-title")
+            sel_el    = await card.query_selector(".scb-card-selection-title")
+            comp_el   = await card.query_selector(".scb-card-info")
+            match_txt = (await match_el.inner_text()).strip()  if match_el else ""
+            sel_txt   = (await sel_el.inner_text()).strip()    if sel_el   else ""
+            comp_txt  = (await comp_el.inner_text()).strip().replace("\n", " | ") if comp_el else ""
+            if match_txt:
+                titre = f"{comp_txt} — {match_txt} — {sel_txt}" if comp_txt else f"{match_txt} — {sel_txt}"
+                boosts.append({
+                    "bookmaker": "Unibet",
+                    "titre": titre[:300],
+                    "url": "https://www.unibet.fr/sport",
+                    "heure": datetime.now().strftime("%H:%M"),
+                })
+    except Exception as e:
+        print(f"[Unibet] Erreur : {e}")
+    return boosts
 
 async def scrape_parionssport(page) -> list[dict]:
+    """ParionsSport - Cotes Boostées (.psel-boosted-bet) - sélecteurs confirmés"""
     boosts = []
     try:
         await page.goto("https://www.enligne.parionssport.fdj.fr/", timeout=30000)
         await page.wait_for_selector(".psel-boosted-bet", timeout=10000)
         elements = await page.query_selector_all(".psel-boosted-bet")
+        print(f"[ParionsSport] {len(elements)} boost(s) trouvé(s)")
         for el in elements:
             texte = (await el.inner_text()).strip()
             if texte and len(texte) > 5:
@@ -137,32 +138,6 @@ async def scrape_parionssport(page) -> list[dict]:
         print(f"[ParionsSport] Erreur : {e}")
     return boosts
 
-
-async def scrape_parionssport(page) -> list[dict]:
-    boosts = []
-    try:
-        await page.goto("https://www.parionssport.fdj.fr/paris-sportifs", timeout=30000)
-        await page.wait_for_timeout(3000)
-
-        elements = await page.query_selector_all(
-            "[class*='boost'], [class*='Boost'], [class*='cb-live'], "
-            "[class*='cb-flash'], [class*='cote-boostee']"
-        )
-        for el in elements:
-            texte = (await el.inner_text()).strip()
-            if texte and len(texte) > 5:
-                boosts.append({
-                    "bookmaker": "ParionsSport",
-                    "titre": texte[:300],
-                    "url": "https://www.parionssport.fdj.fr/paris-sportifs",
-                    "heure": datetime.now().strftime("%H:%M"),
-                })
-    except Exception as e:
-        print(f"[ParionsSport] Erreur : {e}")
-    return boosts
-
-
-# ─── Formatage du message Telegram ───────────────────────────────────────────
 def format_message(boost: dict) -> str:
     emoji = BOOKMAKER_EMOJI.get(boost["bookmaker"], "⚡")
     return (
@@ -172,8 +147,6 @@ def format_message(boost: dict) -> str:
         f"🔗 <a href=\"{boost['url']}\">Voir l'offre</a>"
     )
 
-
-# ─── Orchestrateur principal ─────────────────────────────────────────────────
 async def main():
     cache = load_cache()
     nouveaux_boosts = []
@@ -193,17 +166,9 @@ async def main():
         )
         page = await context.new_page()
 
-        scrapers = [
-            scrape_winamax,
-            scrape_betclic,
-            scrape_unibet,
-            scrape_parionssport,
-        ]
-
-        for scraper in scrapers:
+        for scraper in [scrape_winamax, scrape_betclic, scrape_unibet, scrape_parionssport]:
             boosts = await scraper(page)
             print(f"[{scraper.__name__}] {len(boosts)} boost(s) trouvé(s)")
-
             for boost in boosts:
                 uid = boost_uid(boost["bookmaker"], boost["titre"])
                 if uid not in cache:
@@ -216,23 +181,19 @@ async def main():
 
         await browser.close()
 
-    # Envoi des notifications
     if nouveaux_boosts:
-        print(f"\n🔔 {len(nouveaux_boosts)} nouveau(x) boost(s) détecté(s) !")
+        print(f"\n🔔 {len(nouveaux_boosts)} nouveau(x) boost(s) !")
         for boost in nouveaux_boosts:
             msg = format_message(boost)
             send_telegram(msg)
             print(f"  → Notifié : {boost['bookmaker']} | {boost['titre'][:60]}...")
-        save_cache(cache)
     else:
         print("✅ Aucun nouveau boost détecté.")
 
-    # Nettoyage du cache (garder seulement les 7 derniers jours)
     from datetime import timedelta
     cutoff = (datetime.now() - timedelta(days=7)).isoformat()
     cache = {k: v for k, v in cache.items() if v.get("vu_le", "") > cutoff}
     save_cache(cache)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
