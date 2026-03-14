@@ -1,0 +1,62 @@
+name: Boost Notifier - Verification toutes les 5 min
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check-boosts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout du repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Installer les dependances
+        run: pip install -r requirements.txt
+
+      - name: Installer Playwright Chromium
+        run: playwright install chromium
+
+      - name: "Verification 1/3 - minute 0"
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python boost_notifier.py
+
+      - name: Attente 5 minutes
+        run: sleep 300
+
+      - name: "Verification 2/3 - minute 5"
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python boost_notifier.py
+
+      - name: Attente 5 minutes
+        run: sleep 300
+
+      - name: "Verification 3/3 - minute 10"
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python boost_notifier.py
+
+      - name: Sauvegarder le cache boosts vus
+        run: |
+          git config user.name "Boost Bot"
+          git config user.email "boost-bot@github-actions"
+          git add boosts_vus.json
+          git diff --staged --quiet || git commit -m "Cache boosts updated"
+          git push
