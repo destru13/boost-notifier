@@ -6,13 +6,6 @@ TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 CACHE_FILE       = "boosts_vus.json"
 
-BOOKMAKER_EMOJI = {
-    "Winamax":      "\U0001f7e0",
-    "Betclic":      "\U0001f535",
-    "Unibet":       "\U0001f7e2",
-    "ParionsSport": "\U0001f534",
-}
-
 def send_telegram(message):
     url = "https://api.telegram.org/bot" + TELEGRAM_TOKEN + "/sendMessage"
     resp = requests.post(url, json={
@@ -63,18 +56,22 @@ async def scrape_betclic(page):
     boosts = []
     try:
         await page.goto("https://www.betclic.fr/sport", timeout=30000)
-        await page.wait_for_timeout(4000)
-        elements = await page.query_selector_all(".is-boosted")
-        for el in elements:
-            card = await el.evaluate_handle(
-                'el => el.closest("li,article") || el.parentElement'
-            )
-            t = (await card.inner_text()).strip() if card else (await el.inner_text()).strip()
-            if t and len(t) > 5:
+        await page.wait_for_selector(".boostedCard", timeout=8000)
+        cards = await page.query_selector_all(".boostedCard")
+        for card in cards:
+            title_el = await card.query_selector(".boostedCard_title")
+            sub_el   = await card.query_selector(".boostedCard_subtitle")
+            desc_el  = await card.query_selector(".boostedCard_description")
+            title_t  = (await title_el.inner_text()).strip() if title_el else ""
+            sub_t    = (await sub_el.inner_text()).strip()   if sub_el   else ""
+            desc_t   = (await desc_el.inner_text()).strip()  if desc_el  else ""
+            if desc_t or title_t:
+                titre = title_t + " " + sub_t + " -- " + desc_t
+                href  = await card.get_attribute("href") or "https://www.betclic.fr/sport"
                 boosts.append({
                     "bookmaker": "Betclic",
-                    "titre": t[:300],
-                    "url": "https://www.betclic.fr/sport",
+                    "titre": titre.strip()[:300],
+                    "url": href,
                     "heure": datetime.now().strftime("%H:%M")
                 })
     except Exception as e:
@@ -129,12 +126,17 @@ async def scrape_parionssport(page):
     return boosts
 
 def format_message(boost):
-    emoji = BOOKMAKER_EMOJI.get(boost["bookmaker"], "X")
-    msg = emoji + " <b>NOUVEAU BOOST -- " + boost["bookmaker"] + "</b>" + "\n"
-    msg += "Heure : " + boost["heure"] + "\n\n"
-    msg += boost["titre"] + "\n\n"
-    msg += '<a href="' + boost["url"] + '">Voir offre</a>'
-    return msg
+    emojis = {"Winamax": "🟠", "Betclic": "🔵", "Unibet": "🟢", "ParionsSport": "🔴"}
+    emoji = emojis.get(boost["bookmaker"], "X")
+    lines = [
+        emoji + " <b>NOUVEAU BOOST -- " + boost["bookmaker"] + "</b>",
+        "Heure : " + boost["heure"],
+        "",
+        boost["titre"],
+        "",
+        '<a href="' + boost["url"] + '">Voir offre</a>'
+    ]
+    return "\n".join(lines)
 
 async def main():
     cache = load_cache()
