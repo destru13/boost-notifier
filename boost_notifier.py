@@ -34,6 +34,7 @@ async def scrape_winamax(page):
     boosts = []
     try:
         await page.goto("https://www.winamax.fr/paris-sportifs/sports", timeout=30000)
+        await page.wait_for_load_state("networkidle", timeout=15000)
         await page.wait_for_timeout(4000)
         elements = await page.query_selector_all(
             "[class*='boosted'],[class*='boost'],[class*='cbflash'],[class*='cb-flash']"
@@ -55,8 +56,9 @@ async def scrape_winamax(page):
 async def scrape_betclic(page):
     boosts = []
     try:
-        await page.goto("https://www.betclic.fr/sport", timeout=30000)
-        await page.wait_for_selector(".boostedCard", timeout=8000)
+        await page.goto("https://www.betclic.fr/", timeout=30000)
+        await page.wait_for_load_state("networkidle", timeout=15000)
+        await page.wait_for_timeout(4000)
         cards = await page.query_selector_all(".boostedCard")
         for card in cards:
             title_el = await card.query_selector(".boostedCard_title")
@@ -67,7 +69,7 @@ async def scrape_betclic(page):
             desc_t   = (await desc_el.inner_text()).strip()  if desc_el  else ""
             if desc_t or title_t:
                 titre = title_t + " " + sub_t + " -- " + desc_t
-                href  = await card.get_attribute("href") or "https://www.betclic.fr/sport"
+                href  = await card.get_attribute("href") or "https://www.betclic.fr/"
                 boosts.append({
                     "bookmaker": "Betclic",
                     "titre": titre.strip()[:300],
@@ -83,7 +85,8 @@ async def scrape_unibet(page):
     boosts = []
     try:
         await page.goto("https://www.unibet.fr/sport", timeout=30000)
-        await page.wait_for_selector(".scb-card", timeout=10000)
+        await page.wait_for_load_state("networkidle", timeout=15000)
+        await page.wait_for_timeout(5000)
         cards = await page.query_selector_all(".scb-card")
         for card in cards:
             match_el = await card.query_selector(".scb-card-title")
@@ -109,7 +112,8 @@ async def scrape_parionssport(page):
     boosts = []
     try:
         await page.goto("https://www.enligne.parionssport.fdj.fr/", timeout=30000)
-        await page.wait_for_selector(".psel-boosted-bet", timeout=10000)
+        await page.wait_for_load_state("networkidle", timeout=15000)
+        await page.wait_for_timeout(5000)
         elements = await page.query_selector_all(".psel-boosted-bet")
         for el in elements:
             t = (await el.inner_text()).strip()
@@ -126,7 +130,7 @@ async def scrape_parionssport(page):
     return boosts
 
 def format_message(boost):
-    emojis = {"Winamax": "🟠", "Betclic": "🔵", "Unibet": "🟢", "ParionsSport": "🔴"}
+    emojis = {"Winamax": "O", "Betclic": "B", "Unibet": "U", "ParionsSport": "P"}
     emoji = emojis.get(boost["bookmaker"], "X")
     lines = [
         emoji + " <b>NOUVEAU BOOST -- " + boost["bookmaker"] + "</b>",
@@ -144,12 +148,15 @@ async def main():
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
+                  "--disable-blink-features=AutomationControlled"]
         )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
-            locale="fr-FR"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            locale="fr-FR",
+            viewport={"width": 1280, "height": 800}
         )
+        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         page = await context.new_page()
         for scraper in [scrape_winamax, scrape_betclic, scrape_unibet, scrape_parionssport]:
             boosts = await scraper(page)
