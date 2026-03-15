@@ -15,8 +15,10 @@ HEADERS = {
 
 def send_telegram(message):
     url = "https://api.telegram.org/bot" + TELEGRAM_TOKEN + "/sendMessage"
-    resp = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message,
-        "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+    resp = requests.post(url, json={
+        "chat_id": TELEGRAM_CHAT_ID, "text": message,
+        "parse_mode": "HTML", "disable_web_page_preview": True
+    }, timeout=10)
     if not resp.ok:
         print("Telegram error: " + resp.text)
 
@@ -33,14 +35,12 @@ def save_cache(cache):
 def boost_uid(bookmaker, titre):
     return hashlib.md5((bookmaker + "|" + titre).encode()).hexdigest()
 
-# ---- UNIBET via API Kambi (non geobloquee) ----
 def scrape_unibet():
     boosts = []
     bk = "Unibet"
     try:
         url = "https://eu-offering-api.kambicdn.com/offering/v2018/ubfr/listView/all/all/all/all/boosted.json"
-        params = {"lang": "fr_FR", "market": "FR", "client_id": "2",
-                  "channel_id": "1", "useCombined": "true", "numrows": "50"}
+        params = {"lang": "fr_FR", "market": "FR", "client_id": "2", "channel_id": "1", "useCombined": "true", "numrows": "50"}
         print("[" + bk + "] Appel API Kambi...")
         resp = requests.get(url, params=params, headers=HEADERS, timeout=15)
         print("[" + bk + "] Status: " + str(resp.status_code))
@@ -61,9 +61,7 @@ def scrape_unibet():
                             titre = name + " -- " + label
                             if prev > 0:
                                 titre += " (" + str(prev) + " -> " + str(odds) + ")"
-                            boosts.append({"bookmaker": bk, "titre": titre[:300],
-                                "url": "https://www.unibet.fr/sport",
-                                "heure": datetime.now().strftime("%H:%M")})
+                            boosts.append({"bookmaker": bk, "titre": titre[:300], "url": "https://www.unibet.fr/sport", "heure": datetime.now().strftime("%H:%M")})
         else:
             print("[" + bk + "] Reponse: " + resp.text[:200])
     except Exception as e:
@@ -72,27 +70,25 @@ def scrape_unibet():
     print("[scrape_unibet] " + str(len(boosts)) + " boost(s)")
     return boosts
 
-# ---- BETCLIC via requests + BeautifulSoup ----
 def scrape_betclic():
     boosts = []
     bk = "Betclic"
     try:
-        # Essai API CDN BegMedia
         api_url = "https://offer.cdn.begmedia.com/api/pub/v4/homesports?application=2&countrycode=FR&language=0&limit=20"
         print("[" + bk + "] Essai API CDN...")
         r = requests.get(api_url, headers=HEADERS, timeout=10)
         print("[" + bk + "] CDN status: " + str(r.status_code))
-        if r.status_code == 200 and "json" in r.headers.get("content-type",""):
+        if r.status_code == 200 and "json" in r.headers.get("content-type", ""):
             data = r.json()
-            print("[" + bk + "] CDN data type: " + str(type(data)) + " keys: " + str(list(data.keys()) if isinstance(data,dict) else "list:" + str(len(data)))[:80])
-        # Essai page principale avec session
+            dkeys = str(list(data.keys()) if isinstance(data, dict) else "list:" + str(len(data)))
+            print("[" + bk + "] CDN data: " + dkeys[:80])
         print("[" + bk + "] Essai page HTML...")
         sess = requests.Session()
         sess.headers.update(HEADERS)
         r2 = sess.get("https://www.betclic.fr/", timeout=15)
         print("[" + bk + "] Page status: " + str(r2.status_code))
-        print("[" + bk + "] Body debut: " + r2.text[:150].replace("
-"," "))
+        body_preview = r2.text[:150].strip().replace("\n", " ")
+        print("[" + bk + "] Body debut: " + body_preview)
         if r2.status_code == 200:
             soup = BeautifulSoup(r2.text, "html.parser")
             cards = soup.find_all(class_="boostedCard")
@@ -102,44 +98,34 @@ def scrape_betclic():
                 s_el = card.find(class_="boostedCard_subtitle")
                 d_el = card.find(class_="boostedCard_description")
                 t = ((t_el.text if t_el else "") + " " + (s_el.text if s_el else "") + " -- " + (d_el.text if d_el else "")).strip()
-                href = card.get("href","https://www.betclic.fr/")
+                href = card.get("href", "https://www.betclic.fr/")
                 if t and len(t) > 5:
-                    boosts.append({"bookmaker": bk, "titre": t[:300], "url": href,
-                        "heure": datetime.now().strftime("%H:%M")})
+                    boosts.append({"bookmaker": bk, "titre": t[:300], "url": href, "heure": datetime.now().strftime("%H:%M")})
     except Exception as e:
         print("[" + bk + "] ERREUR: " + str(e))
         print(traceback.format_exc()[:300])
     print("[scrape_betclic] " + str(len(boosts)) + " boost(s)")
     return boosts
 
-# ---- PARIONSSPORT via requests ----
 def scrape_parionssport():
     boosts = []
     bk = "ParionsSport"
     try:
-        # Essai API JSON publique FDJ
-        apis = [
-            "https://www.enligne.parionssport.fdj.fr/api/psel/market/boosted-bet",
-            "https://api.parionssport.fdj.fr/psel/market/boosted",
-        ]
-        for api_url in apis:
+        for api_url in ["https://www.enligne.parionssport.fdj.fr/api/psel/market/boosted-bet", "https://api.parionssport.fdj.fr/psel/market/boosted"]:
             print("[" + bk + "] Essai API: " + api_url)
             try:
                 r = requests.get(api_url, headers=HEADERS, timeout=10)
-                print("[" + bk + "] Status: " + str(r.status_code) + " CT: " + r.headers.get("content-type","")[:40])
+                ct = r.headers.get("content-type", "")
+                print("[" + bk + "] Status: " + str(r.status_code) + " CT: " + ct[:40])
                 if r.status_code == 200:
-                    if "json" in r.headers.get("content-type",""):
-                        data = r.json()
-                        print("[" + bk + "] JSON: " + str(data)[:200])
+                    if "json" in ct:
+                        print("[" + bk + "] JSON: " + str(r.json())[:200])
                     else:
-                        print("[" + bk + "] HTML: " + r.text[:150].replace("
-"," "))
+                        print("[" + bk + "] HTML: " + r.text[:150].strip().replace("\n", " "))
             except Exception as e2:
                 print("[" + bk + "] erreur: " + str(e2)[:80])
-        # Essai page HTML
         print("[" + bk + "] Essai page HTML...")
-        r3 = requests.get("https://www.enligne.parionssport.fdj.fr/paris-sportifs/cotes-boostees",
-                          headers=HEADERS, timeout=15)
+        r3 = requests.get("https://www.enligne.parionssport.fdj.fr/paris-sportifs/cotes-boostees", headers=HEADERS, timeout=15)
         print("[" + bk + "] Page status: " + str(r3.status_code))
         if r3.status_code == 200:
             soup = BeautifulSoup(r3.text, "html.parser")
@@ -153,30 +139,24 @@ def scrape_parionssport():
     print("[scrape_parionssport] " + str(len(boosts)) + " boost(s)")
     return boosts
 
-# ---- WINAMAX via API interne ----
 def scrape_winamax():
     boosts = []
     bk = "Winamax"
     try:
-        # Chercher les CB Flash via API Winamax
-        apis = [
-            "https://www.winamax.fr/apiv1/sports/1",
-            "https://www.winamax.fr/paris-sportifs/sports/1/7",
-        ]
-        for api_url in apis:
+        for api_url in ["https://www.winamax.fr/apiv1/sports/1", "https://www.winamax.fr/paris-sportifs/sports/1/7"]:
             print("[" + bk + "] Essai: " + api_url)
             try:
                 r = requests.get(api_url, headers=HEADERS, timeout=10)
-                print("[" + bk + "] Status: " + str(r.status_code) + " CT: " + r.headers.get("content-type","")[:40])
+                ct = r.headers.get("content-type", "")
+                print("[" + bk + "] Status: " + str(r.status_code) + " CT: " + ct[:40])
                 if r.status_code == 200:
-                    ct = r.headers.get("content-type","")
                     if "json" in ct:
                         data = r.json()
-                        print("[" + bk + "] JSON keys: " + str(list(data.keys()) if isinstance(data,dict) else "list")[:80])
+                        print("[" + bk + "] JSON keys: " + str(list(data.keys()) if isinstance(data, dict) else "list")[:80])
                     else:
                         soup = BeautifulSoup(r.text, "html.parser")
                         print("[" + bk + "] Title: " + (soup.title.text if soup.title else "none"))
-                        boost_els = soup.find_all(attrs={"class": lambda c: c and any(k in " ".join(c).lower() for k in ["boost","cbflash","cb-flash"])})
+                        boost_els = soup.find_all(attrs={"class": lambda c: c and any(k in " ".join(c).lower() for k in ["boost", "cbflash", "cb-flash"])})
                         print("[" + bk + "] boost elements: " + str(len(boost_els)))
                         for el in boost_els[:3]:
                             print("[" + bk + "] el: " + el.get_text()[:100])
@@ -192,10 +172,7 @@ def scrape_winamax():
 def format_message(boost):
     emojis = {"Winamax": "O", "Betclic": "B", "Unibet": "U", "ParionsSport": "P"}
     emoji = emojis.get(boost["bookmaker"], "X")
-    return (emoji + " <b>NOUVEAU BOOST -- " + boost["bookmaker"] + "</b>\n" +
-            "Heure : " + boost["heure"] + "\n\n" +
-            boost["titre"] + "\n\n" +
-            '<a href="' + boost["url"] + '">Voir offre</a>')
+    return (emoji + " <b>NOUVEAU BOOST -- " + boost["bookmaker"] + "</b>\nHeure : " + boost["heure"] + "\n\n" + boost["titre"] + "\n\n" + '<a href="' + boost["url"] + '">Voir offre</a>')
 
 def main():
     print("=== DEMARRAGE API MODE ===")
@@ -213,8 +190,7 @@ def main():
             uid = boost_uid(boost["bookmaker"], boost["titre"])
             if uid not in cache:
                 nouveaux.append(boost)
-                cache[uid] = {"vu_le": datetime.now().isoformat(),
-                    "bookmaker": boost["bookmaker"], "titre": boost["titre"][:100]}
+                cache[uid] = {"vu_le": datetime.now().isoformat(), "bookmaker": boost["bookmaker"], "titre": boost["titre"][:100]}
     if nouveaux:
         print("NOUVEAUX: " + str(len(nouveaux)))
         for boost in nouveaux:
@@ -223,7 +199,7 @@ def main():
     else:
         print("Aucun nouveau boost.")
     cutoff = (datetime.now() - timedelta(days=7)).isoformat()
-    cache = {k: v for k, v in cache.items() if v.get("vu_le","") > cutoff}
+    cache = {k: v for k, v in cache.items() if v.get("vu_le", "") > cutoff}
     save_cache(cache)
     print("=== FIN ===")
 
