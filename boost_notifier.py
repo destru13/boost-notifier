@@ -1,4 +1,4 @@
-import asyncio, json, os, hashlib, requests
+import asyncio, json, os, hashlib, requests, traceback
 from datetime import datetime, timedelta
 from playwright.async_api import async_playwright
 
@@ -30,46 +30,52 @@ def save_cache(cache):
 def boost_uid(bookmaker, titre):
     return hashlib.md5((bookmaker + "|" + titre).encode()).hexdigest()
 
-async def accept_cookies(page):
-    """Accepter les cookies sur les sites FR (RGPD)"""
-    try:
-        selectors = [
-            "button:has-text('Tout accepter')",
-            "button:has-text('Accepter tout')",
-            "button:has-text('Accepter')",
-            "button:has-text('Accept all')",
-            "button:has-text('J\'accepte')",
-            "#onetrust-accept-btn-handler",
-            "[class*='accept'][class*='cookie']",
-            "[id*='accept'][id*='cookie']",
-            "button[class*='accept']",
-        ]
-        for sel in selectors:
-            try:
-                btn = page.locator(sel).first
-                if await btn.is_visible(timeout=2000):
-                    await btn.click()
-                    await page.wait_for_timeout(1500)
-                    print("Cookies acceptes via: " + sel)
-                    return True
-            except Exception:
-                continue
-    except Exception:
-        pass
+async def accept_cookies(page, bookmaker):
+    print("[" + bookmaker + "] Tentative acceptation cookies...")
+    selectors = [
+        "button:has-text('Tout accepter')",
+        "button:has-text('Accepter tout')",
+        "button:has-text('Accepter les cookies')",
+        "button:has-text('Accepter')",
+        "button:has-text('Accept all')",
+        "#onetrust-accept-btn-handler",
+        "[class*='accept'][class*='cookie']",
+        "button[class*='accept']",
+        ".btn-accept",
+    ]
+    for sel in selectors:
+        try:
+            btn = page.locator(sel).first
+            if await btn.is_visible(timeout=2000):
+                await btn.click()
+                await page.wait_for_timeout(2000)
+                print("[" + bookmaker + "] Cookies acceptes via: " + sel)
+                return True
+        except Exception:
+            continue
+    print("[" + bookmaker + "] Aucun bouton cookies trouve")
     return False
 
 async def scrape_betclic(page):
     boosts = []
+    bk = "Betclic"
     try:
+        print("[" + bk + "] Navigation vers https://www.betclic.fr/")
         await page.goto("https://www.betclic.fr/", timeout=30000)
+        print("[" + bk + "] Page chargee, titre: " + await page.title())
         await page.wait_for_timeout(3000)
-        await accept_cookies(page)
+        await accept_cookies(page, bk)
         await page.wait_for_timeout(4000)
-        # Scroll pour declencher le chargement lazy
-        await page.evaluate("window.scrollTo(0, 300)")
+        await page.evaluate("window.scrollTo(0, 400)")
         await page.wait_for_timeout(2000)
+        # Verifier URL actuelle
+        print("[" + bk + "] URL actuelle: " + page.url)
+        # Compter les elements
         count = await page.evaluate("document.querySelectorAll('.boostedCard').length")
-        print("[Betclic] .boostedCard count: " + str(count))
+        print("[" + bk + "] .boostedCard count: " + str(count))
+        # Afficher le HTML de la page (les 500 premiers chars)
+        body_text = await page.evaluate("document.body.innerText.substring(0, 300)")
+        print("[" + bk + "] body text debut: " + body_text.replace('\n',' ')[:200])
         if count > 0:
             data = await page.evaluate("""() => {
                 return [...document.querySelectorAll('.boostedCard')].map(c => ({
@@ -79,33 +85,43 @@ async def scrape_betclic(page):
                     href: c.href || ''
                 }));
             }""")
+            print("[" + bk + "] data: " + str(data)[:300])
             for item in data:
                 titre = (item.get('title','') + ' ' + item.get('sub','') + ' -- ' + item.get('desc','')).strip()
                 if titre and len(titre) > 5:
                     boosts.append({
-                        "bookmaker": "Betclic",
+                        "bookmaker": bk,
                         "titre": titre[:300],
                         "url": item.get('href') or "https://www.betclic.fr/",
                         "heure": datetime.now().strftime("%H:%M")
                     })
     except Exception as e:
-        print("[Betclic] Erreur : " + str(e))
+        print("[" + bk + "] ERREUR: " + str(e))
+        print(traceback.format_exc()[:500])
     print("[scrape_betclic] " + str(len(boosts)) + " boost(s) trouve(s)")
     return boosts
 
 async def scrape_unibet(page):
     boosts = []
+    bk = "Unibet"
     try:
+        print("[" + bk + "] Navigation vers https://www.unibet.fr/sport")
         await page.goto("https://www.unibet.fr/sport", timeout=30000)
+        print("[" + bk + "] Page chargee, titre: " + await page.title())
         await page.wait_for_timeout(3000)
-        await accept_cookies(page)
+        await accept_cookies(page, bk)
         await page.wait_for_timeout(4000)
         await page.evaluate("window.scrollTo(0, 400)")
         await page.wait_for_timeout(2000)
+        print("[" + bk + "] URL actuelle: " + page.url)
         count = await page.evaluate("document.querySelectorAll('.scb-card').length")
-        print("[Unibet] .scb-card count: " + str(count))
+        print("[" + bk + "] .scb-card count: " + str(count))
+        # Chercher aussi la section scb
+        scb_count = await page.evaluate("document.querySelectorAll('.scb').length")
+        print("[" + bk + "] .scb section count: " + str(scb_count))
+        body_text = await page.evaluate("document.body.innerText.substring(0, 300)")
+        print("[" + bk + "] body text debut: " + body_text.replace('\n',' ')[:200])
         if count > 0:
-            # Pas de regex \n - on fait la logique en Python
             data = await page.evaluate("""() => {
                 return [...document.querySelectorAll('.scb-card')].map(c => ({
                     match: (c.querySelector('.scb-card-title')?.innerText || '').trim(),
@@ -120,27 +136,37 @@ async def scrape_unibet(page):
                 if match_t:
                     titre = (comp_t + " -- " + match_t + " -- " + sel_t) if comp_t else (match_t + " -- " + sel_t)
                     boosts.append({
-                        "bookmaker": "Unibet",
+                        "bookmaker": bk,
                         "titre": titre[:300],
                         "url": "https://www.unibet.fr/sport",
                         "heure": datetime.now().strftime("%H:%M")
                     })
     except Exception as e:
-        print("[Unibet] Erreur : " + str(e))
+        print("[" + bk + "] ERREUR: " + str(e))
+        print(traceback.format_exc()[:500])
     print("[scrape_unibet] " + str(len(boosts)) + " boost(s) trouve(s)")
     return boosts
 
 async def scrape_parionssport(page):
     boosts = []
+    bk = "ParionsSport"
     try:
+        print("[" + bk + "] Navigation vers https://www.enligne.parionssport.fdj.fr/")
         await page.goto("https://www.enligne.parionssport.fdj.fr/", timeout=30000)
+        print("[" + bk + "] Page chargee, titre: " + await page.title())
         await page.wait_for_timeout(3000)
-        await accept_cookies(page)
+        await accept_cookies(page, bk)
         await page.wait_for_timeout(4000)
         await page.evaluate("window.scrollTo(0, 400)")
         await page.wait_for_timeout(2000)
+        print("[" + bk + "] URL actuelle: " + page.url)
         count = await page.evaluate("document.querySelectorAll('.psel-boosted-bet').length")
-        print("[ParionsSport] .psel-boosted-bet count: " + str(count))
+        print("[" + bk + "] .psel-boosted-bet count: " + str(count))
+        # Chercher aussi via d'autres selecteurs
+        count2 = await page.evaluate("document.querySelectorAll('[class*="boosted"]').length")
+        print("[" + bk + "] [class*=boosted] count: " + str(count2))
+        body_text = await page.evaluate("document.body.innerText.substring(0, 300)")
+        print("[" + bk + "] body text debut: " + body_text.replace('\n',' ')[:200])
         if count > 0:
             data = await page.evaluate("""() => {
                 return [...document.querySelectorAll('.psel-boosted-bet')].map(e => (e.innerText || '').trim());
@@ -148,40 +174,48 @@ async def scrape_parionssport(page):
             for t in data:
                 if t and len(t) > 5:
                     boosts.append({
-                        "bookmaker": "ParionsSport",
+                        "bookmaker": bk,
                         "titre": t[:300],
                         "url": "https://www.enligne.parionssport.fdj.fr/",
                         "heure": datetime.now().strftime("%H:%M")
                     })
     except Exception as e:
-        print("[ParionsSport] Erreur : " + str(e))
+        print("[" + bk + "] ERREUR: " + str(e))
+        print(traceback.format_exc()[:500])
     print("[scrape_parionssport] " + str(len(boosts)) + " boost(s) trouve(s)")
     return boosts
 
 async def scrape_winamax(page):
     boosts = []
+    bk = "Winamax"
     try:
+        print("[" + bk + "] Navigation vers https://www.winamax.fr/paris-sportifs/sports")
         await page.goto("https://www.winamax.fr/paris-sportifs/sports", timeout=30000)
+        print("[" + bk + "] Page chargee, titre: " + await page.title())
         await page.wait_for_timeout(3000)
-        await accept_cookies(page)
+        await accept_cookies(page, bk)
         await page.wait_for_timeout(5000)
-        title = await page.title()
-        print("[Winamax] page title: " + title)
+        print("[" + bk + "] URL actuelle: " + page.url)
+        body_text = await page.evaluate("document.body.innerText.substring(0, 300)")
+        print("[" + bk + "] body text debut: " + body_text.replace('\n',' ')[:200])
         elements = await page.query_selector_all(
             "[class*='boosted'],[class*='boost'],[class*='cbflash'],[class*='cb-flash']"
         )
-        print("[Winamax] elements: " + str(len(elements)))
+        print("[" + bk + "] elements boost trouves: " + str(len(elements)))
         for el in elements:
             t = (await el.inner_text()).strip()
+            cls = await el.get_attribute("class") or ""
+            print("[" + bk + "] element: class=" + cls[:60] + " text=" + t[:80])
             if t and len(t) > 5:
                 boosts.append({
-                    "bookmaker": "Winamax",
+                    "bookmaker": bk,
                     "titre": t[:300],
                     "url": "https://www.winamax.fr/paris-sportifs/sports",
                     "heure": datetime.now().strftime("%H:%M")
                 })
     except Exception as e:
-        print("[Winamax] Erreur : " + str(e))
+        print("[" + bk + "] ERREUR: " + str(e))
+        print(traceback.format_exc()[:500])
     print("[scrape_winamax] " + str(len(boosts)) + " boost(s) trouve(s)")
     return boosts
 
@@ -199,7 +233,9 @@ def format_message(boost):
     return "\n".join(lines)
 
 async def main():
+    print("=== DEMARRAGE BOOST NOTIFIER ===")
     cache = load_cache()
+    print("Cache charge: " + str(len(cache)) + " entrees")
     nouveaux = []
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -214,7 +250,9 @@ async def main():
         )
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         page = await context.new_page()
+        print("Browser et page crees")
         for scraper in [scrape_betclic, scrape_unibet, scrape_parionssport, scrape_winamax]:
+            print("--- Lancement: " + scraper.__name__ + " ---")
             boosts = await scraper(page)
             for boost in boosts:
                 uid = boost_uid(boost["bookmaker"], boost["titre"])
@@ -226,16 +264,18 @@ async def main():
                         "titre": boost["titre"][:100]
                     }
         await browser.close()
+        print("Browser ferme")
     if nouveaux:
         print("NOUVEAUX BOOSTS : " + str(len(nouveaux)))
         for boost in nouveaux:
+            print("  Envoi Telegram: " + boost["bookmaker"] + " | " + boost["titre"][:60])
             send_telegram(format_message(boost))
-            print("  -> " + boost["bookmaker"] + " | " + boost["titre"][:60])
     else:
         print("Aucun nouveau boost detecte.")
     cutoff = (datetime.now() - timedelta(days=7)).isoformat()
     cache = {k: v for k, v in cache.items() if v.get("vu_le", "") > cutoff}
     save_cache(cache)
+    print("=== FIN ===")
 
 if __name__ == "__main__":
     asyncio.run(main())
